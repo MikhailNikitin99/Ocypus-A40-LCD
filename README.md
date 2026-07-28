@@ -63,8 +63,8 @@ The LCD is controlled through **HID Interface 1** using **Report ID `0x07`**.
 ## Automatic
 
 ```bash
-git clone https://github.com/MikhailNikitin99/ocypus-a40-lcd-linux.git
-cd ocypus-a40-lcd-linux
+git clone https://github.com/MikhailNikitin99/Ocypus-A40-LCD.git
+cd Ocypus-A40-LCD
 
 sudo ./install.sh
 ```
