@@ -1,0 +1,25 @@
+[Unit]
+Description=Ocypus Iota A40 LCD display
+After=multi-user.target
+
+[Service]
+Type=simple
+User=ocypus
+Group=ocypus
+Environment=OCYPUS_SENSOR=coretemp
+Environment=OCYPUS_RATE=1
+ExecStart=/opt/ocypus-a40-lcd/.venv/bin/python /opt/ocypus-a40-lcd/ocypus-control.py on
+Restart=always
+RestartSec=5
+
+# hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/dev
+DevicePolicy=closed
+DeviceAllow=char-usb_device rw
+
+[Install]
+WantedBy=multi-user.target
