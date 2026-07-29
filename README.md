@@ -48,7 +48,7 @@ The LCD is controlled through **HID Interface 1** using **Report ID `0x07`**.
 - Linux
 - Python 3.9+
 - `psutil`
-- **`hidapi` Python package**
+- `hidapi`
 - systemd
 - udev
 
