@@ -16,7 +16,6 @@ It reads CPU temperature using `psutil` and displays it on the cooler's built-in
 - 🌡 Display CPU temperature in Celsius or Fahrenheit
 - 🧩 Compatible with any `psutil` temperature sensor (`coretemp`, `k10temp`, ...)
 - 🔌 Native USB HID communication
-- 🔄 Automatic reconnect after unplug or suspend
 - ⚙️ systemd service included
 - 🐧 Linux-native implementation
 - 📦 Simple installer
