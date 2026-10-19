@@ -74,6 +74,7 @@ The installer automatically:
 - creates an `ocypus` system user
 - installs Python dependencies
 - installs udev rules (including disabling USB autosuspend for the cooler)
+- installs the `ocypus-control` command into `/usr/local/bin`
 - installs the systemd service
 - enables automatic startup
 
@@ -108,40 +109,43 @@ sudo udevadm trigger
 
 # Usage
 
+After `install.sh` the CLI is available as `ocypus-control` (a launcher that uses
+the virtualenv).
+
 Show available sensors
 
 ```bash
-ocypus-control.py sensors
+ocypus-control sensors
 ```
 
 Stream temperature (the sensor defaults to `coretemp`)
 
 ```bash
-ocypus-control.py on
+ocypus-control on
 ```
 
 Specific sensor
 
 ```bash
-ocypus-control.py on -s coretemp
+ocypus-control on -s coretemp
 ```
 
 Fahrenheit
 
 ```bash
-ocypus-control.py on -u f
+ocypus-control on -u f
 ```
 
 Refresh every 2 seconds
 
 ```bash
-ocypus-control.py on -r 2
+ocypus-control on -r 2
 ```
 
 Re-initialise the display every 15 seconds (default: 30, `0` disables)
 
 ```bash
-ocypus-control.py on --reinit 15
+ocypus-control on --reinit 15
 ```
 
 The LCD is only written when the displayed value changes, plus a keepalive every
@@ -298,7 +302,7 @@ journalctl -u ocypus-lcd.service -n 50 --no-pager
 ```
 
 - `Send failed` — the HID handle is dead; the service restarts itself.
-- `Sensor '...' not found` — wrong sensor name; list them with `ocypus-control.py sensors`.
+- `Sensor '...' not found` — wrong sensor name; list them with `ocypus-control sensors`.
 - No errors at all — the firmware blanked the display; it is re-initialised every
   30 seconds (`--reinit`).
 

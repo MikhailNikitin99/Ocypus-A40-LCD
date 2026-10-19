@@ -53,6 +53,15 @@ python3 -m venv "$INSTALL_DIR/.venv"
 
 "$INSTALL_DIR/.venv/bin/pip" uninstall -y hid 2>/dev/null || true
 
+# CLI launcher: the script lives in $INSTALL_DIR and needs the venv's Python.
+echo "Installing /usr/local/bin/ocypus-control..."
+mkdir -p /usr/local/bin
+cat > /usr/local/bin/ocypus-control <<EOF
+#!/bin/sh
+exec "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/ocypus-control.py" "\$@"
+EOF
+chmod 755 /usr/local/bin/ocypus-control
+
 # --- Udev и systemd ---
 echo "Reloading udev rules..."
 udevadm control --reload-rules
