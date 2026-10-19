@@ -16,6 +16,7 @@ It reads CPU temperature using `psutil` and displays it on the cooler's built-in
 - 🌡 Display CPU temperature in Celsius or Fahrenheit
 - 🧩 Compatible with any `psutil` temperature sensor (`coretemp`, `k10temp`, ...)
 - 🔌 Native USB HID communication
+- 🔧 Recovers from USB resets and from a blanked display automatically
 - ⚙️ systemd service included
 - 🐧 Linux-native implementation
 - 📦 Simple installer
@@ -72,9 +73,12 @@ The installer automatically:
 
 - creates an `ocypus` system user
 - installs Python dependencies
-- installs udev rules
+- installs udev rules (including disabling USB autosuspend for the cooler)
 - installs the systemd service
 - enables automatic startup
+
+Re-run `sudo ./install.sh` to update an existing installation: it copies the new
+files and restarts the service.
 
 ---
 
@@ -86,13 +90,19 @@ pip install hidapi psutil
 sudo cp ocypus-control.py /usr/local/bin/
 sudo chmod +x /usr/local/bin/ocypus-control.py
 
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin ocypus
+sudo groupadd --system ocypus
+sudo useradd --system --gid ocypus --no-create-home --shell /usr/sbin/nologin ocypus
 
 sudo cp udev/99-ocypus-a40.rules /etc/udev/rules.d/
 
-sudo udevadm control --reload
+sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
+
+> **Note**
+> The bundled systemd unit expects the script in `/opt/ocypus-a40-lcd` with a
+> virtualenv (`/opt/ocypus-a40-lcd/.venv/bin/python`). Use `install.sh` for the
+> service, or adjust `ExecStart` in `systemd/ocypus-lcd.service` to your paths.
 
 ---
 
@@ -104,7 +114,7 @@ Show available sensors
 ocypus-control.py sensors
 ```
 
-Automatic sensor detection
+Stream temperature (the sensor defaults to `coretemp`)
 
 ```bash
 ocypus-control.py on
@@ -128,17 +138,23 @@ Refresh every 2 seconds
 ocypus-control.py on -r 2
 ```
 
-Turn LCD off
+Re-initialise the display every 15 seconds (default: 30, `0` disables)
 
 ```bash
-ocypus-control.py off
+ocypus-control.py on --reinit 15
 ```
+
+The LCD is only written when the displayed value changes, plus a keepalive every
+10 seconds, so idle USB traffic stays low.
+
+> **Note**
+> Blanking the LCD is not implemented yet: `off` does not turn the display off.
 
 ---
 
 # Running as a Service
 
-Install:
+Install (the installer already does this):
 
 ```bash
 sudo systemctl enable --now ocypus-lcd.service
@@ -155,6 +171,33 @@ Logs
 ```bash
 journalctl -u ocypus-lcd.service -f
 ```
+
+Settings
+
+The script reads these environment variables (the unit sets `OCYPUS_SENSOR` and
+`OCYPUS_RATE` explicitly):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `OCYPUS_SENSOR` | `coretemp` | `psutil` sensor group |
+| `OCYPUS_RATE` | `1` | sensor poll period, seconds |
+| `OCYPUS_REINIT` | `30` | display re-init interval, seconds (`0` disables) |
+
+Override them with a drop-in:
+
+```bash
+sudo systemctl edit ocypus-lcd.service
+
+# [Service]
+# Environment=OCYPUS_RATE=2
+```
+
+Recovery
+
+- The display is re-initialised every 30 seconds, so a firmware blank does not leave
+  it dark.
+- If writing to the HID device fails (USB reset or unplug), the process exits and
+  systemd restarts it (`Restart=always`, `RestartSec=5`).
 
 ---
 
@@ -203,7 +246,12 @@ lsusb -d 1a2c:434d
 
 ### Permission denied
 
-Verify the udev rule is installed and reload it.
+Verify the udev rule is installed and reload it:
+
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
 
 ---
 
@@ -231,11 +279,28 @@ python3 -c "import psutil; print(psutil.sensors_temperatures())"
 
 ### After suspend the LCD is blank
 
-Restart
+The service re-initialises the display every 30 seconds and restarts itself if the
+HID handle is dead, so it normally recovers on its own. If it does not:
 
 ```bash
+journalctl -u ocypus-lcd.service -n 50 --no-pager
 sudo systemctl restart ocypus-lcd.service
 ```
+
+---
+
+### The display stays blank
+
+Check the journal:
+
+```bash
+journalctl -u ocypus-lcd.service -n 50 --no-pager
+```
+
+- `Send failed` — the HID handle is dead; the service restarts itself.
+- `Sensor '...' not found` — wrong sensor name; list them with `ocypus-control.py sensors`.
+- No errors at all — the firmware blanked the display; it is re-initialised every
+  30 seconds (`--reinit`).
 
 ---
 
