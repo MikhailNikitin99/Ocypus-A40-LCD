@@ -15,6 +15,7 @@ import argparse
 import math
 import os
 import sys
+import threading
 import time
 from typing import Optional
 
@@ -272,10 +273,11 @@ def main():
         sys.exit(1)
 
     import signal
-    stop = False
+    stop_event = threading.Event()
+
     def handler(signum, frame):
-        nonlocal stop
-        stop = True
+        stop_event.set()
+
     signal.signal(signal.SIGINT, handler)
     signal.signal(signal.SIGTERM, handler)
 
@@ -286,7 +288,7 @@ def main():
     init_mark = ctrl.last_init
     reading_ok = True
     active_sensor = args.sensor
-    while not stop:
+    while not stop_event.is_set():
         # Wake a display that the firmware blanked: writes keep succeeding but nothing
         # is shown until the init command is repeated.
         if not ctrl.maybe_reinit():
@@ -345,7 +347,14 @@ def main():
                     sys.exit(1)
                 last_keepalive = time.monotonic()
                 init_mark = ctrl.last_init
-        time.sleep(args.rate)
+        # Wait for the next sample, but wake up regularly so SIGTERM/SIGINT is
+        # handled promptly even if Event.wait() is not interrupted by a signal.
+        deadline = time.monotonic() + args.rate
+        while not stop_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            stop_event.wait(min(remaining, 0.5))
 
     ctrl.close()
 
