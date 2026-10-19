@@ -123,10 +123,17 @@ class OcypusController:
 
 
 def get_sensors():
-    return psutil.sensors_temperatures()
+    try:
+        return psutil.sensors_temperatures()
+    except Exception as e:
+        # hwmon can vanish temporarily (suspend, renumbering); don't kill the service
+        print(f"sensors_temperatures() failed: {e}", file=sys.stderr)
+        return None
 
 
 def find_sensor(sensors, name, label=None):
+    if not sensors:
+        return None
     group = sensors.get(name)
     if not group:
         return None
@@ -164,7 +171,11 @@ def main():
             print(f"interface={d.get('interface_number')} path={d['path'].decode() if isinstance(d['path'], bytes) else d['path']}")
         return
     if args.cmd == 'sensors':
-        for name, entries in get_sensors().items():
+        sensors = get_sensors()
+        if sensors is None:
+            print("Could not read temperature sensors.", file=sys.stderr)
+            sys.exit(1)
+        for name, entries in sensors.items():
             for s in entries:
                 print(f"{name}\t{s.label or '<unlabelled>'}\t{s.current:.1f}°C")
         return
