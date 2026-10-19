@@ -58,6 +58,8 @@ DEFAULT_SENSOR = os.environ.get("OCYPUS_SENSOR", "coretemp")
 DEFAULT_REFRESH = env_float("OCYPUS_RATE", 1.0)
 REINIT_INTERVAL = env_float("OCYPUS_REINIT", 30.0)
 KEEPALIVE_INTERVAL = 10.0
+RECONNECT_MIN = 1.0
+RECONNECT_MAX = 30.0
 FALLBACK_SENSORS = ("coretemp", "k10temp", "zenpower", "cpu_thermal", "acpitz")
 
 
@@ -68,6 +70,7 @@ class OcypusController:
         self.last_init = 0.0
 
     def open(self, interface: int = DEFAULT_INTERFACE, path: Optional[str] = None) -> bool:
+        self.close()
         try:
             devices = hid.enumerate(VID, PID)
         except Exception as e:
@@ -91,10 +94,16 @@ class OcypusController:
         dev_path = info['path']
         if isinstance(dev_path, bytes):
             dev_path = dev_path.decode()
+        dev = None
         try:
             dev = hid.device()
             dev.open_path(dev_path.encode())
         except Exception as e:
+            if dev is not None:
+                try:
+                    dev.close()
+                except Exception:
+                    pass
             print(f"Failed to open {dev_path}: {e}", file=sys.stderr)
             return False
         self.device = dev
@@ -214,6 +223,17 @@ def pick_sensor(sensors, requested, label=None, active=None, fallback=True):
     return first_seen, None, None
 
 
+def wait_event(event, seconds):
+    """Wait up to seconds, waking regularly so signals are handled promptly."""
+    deadline = time.monotonic() + seconds
+    while not event.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        event.wait(min(remaining, 0.5))
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ocypus Iota A40 LCD driver")
     sub = parser.add_subparsers(dest='cmd', required=True)
@@ -269,8 +289,6 @@ def main():
     if not math.isfinite(args.reinit):
         parser.error("--reinit must be a finite number")
     ctrl.reinit_interval = args.reinit
-    if not ctrl.open(interface=args.interface, path=getattr(args, 'path', None)):
-        sys.exit(1)
 
     import signal
     stop_event = threading.Event()
@@ -281,20 +299,56 @@ def main():
     signal.signal(signal.SIGINT, handler)
     signal.signal(signal.SIGTERM, handler)
 
-    print(f"Display started (sensor={args.sensor}, unit={args.unit})", file=sys.stderr)
     last_temp = None
     last_sent_int = None
-    last_keepalive = time.monotonic()
-    init_mark = ctrl.last_init
+    last_keepalive = 0.0
+    init_mark = 0.0
     reading_ok = True
     active_sensor = args.sensor
+    force_send = False
+
+    def connect():
+        delay = RECONNECT_MIN
+        attempts = 0
+        while not stop_event.is_set():
+            if ctrl.open(interface=args.interface, path=args.path):
+                if attempts:
+                    print("Reconnected", file=sys.stderr, flush=True)
+                return True
+            attempts += 1
+            print(f"Retrying in {delay:.0f}s", file=sys.stderr, flush=True)
+            if wait_event(stop_event, delay):
+                return False
+            delay = min(delay * 2, RECONNECT_MAX)
+        return False
+
+    def reconnect():
+        nonlocal last_sent_int, last_keepalive, init_mark, force_send
+        ctrl.close()
+        if not connect():
+            return False
+        # init cleared the display, so send the next value right away.
+        last_sent_int = None
+        last_keepalive = time.monotonic()
+        init_mark = ctrl.last_init
+        force_send = True
+        return True
+
+    if not connect():
+        ctrl.close()
+        return
+    last_keepalive = time.monotonic()
+    init_mark = ctrl.last_init
+    print(f"Display started (sensor={args.sensor}, unit={args.unit})", file=sys.stderr)
+
     while not stop_event.is_set():
         # Wake a display that the firmware blanked: writes keep succeeding but nothing
         # is shown until the init command is repeated.
         if not ctrl.maybe_reinit():
-            print("Init failed: restarting service", file=sys.stderr, flush=True)
-            ctrl.close()
-            sys.exit(1)
+            print("Init failed; reconnecting", file=sys.stderr, flush=True)
+            if not reconnect():
+                break
+            continue
         sensors = get_sensors()
         name, sensor, temp = pick_sensor(
             sensors, args.sensor, args.label, active_sensor, not args.no_fallback
@@ -316,20 +370,21 @@ def main():
                 active_sensor = name
             value_int = display_value(temp, args.unit)
             changed = last_sent_int != value_int
-            if changed or due or reinit_done:
+            if changed or due or reinit_done or force_send:
                 if ctrl.send_temperature(temp, args.unit):
                     last_temp = temp
                     last_sent_int = value_int
                     last_keepalive = time.monotonic()
                     init_mark = ctrl.last_init
+                    force_send = False
                     if changed:
                         print(f"{sensor.label or name}: {value_int}°{args.unit.upper()}", flush=True)
                 else:
-                    # The HID handle is dead (USB reset/unplug, short write). Exit and let
-                    # systemd restart us so the device is re-opened and re-initialised.
-                    print("Send failed: restarting service", file=sys.stderr, flush=True)
-                    ctrl.close()
-                    sys.exit(1)
+                    # The HID handle is dead (USB reset/unplug, short write).
+                    print("Send failed; reconnecting", file=sys.stderr, flush=True)
+                    if not reconnect():
+                        break
+                    continue
         else:
             if reading_ok:
                 if sensors is None:
@@ -340,21 +395,17 @@ def main():
                     print(f"Sensor '{active_sensor}' not found", file=sys.stderr, flush=True)
                 reading_ok = False
             # Keep the display alive with the last known value, never 0 °C.
-            if last_temp is not None and (due or reinit_done):
+            if last_temp is not None and (due or reinit_done or force_send):
                 if not ctrl.send_temperature(last_temp, args.unit):
-                    print("Send failed: restarting service", file=sys.stderr, flush=True)
-                    ctrl.close()
-                    sys.exit(1)
+                    print("Send failed; reconnecting", file=sys.stderr, flush=True)
+                    if not reconnect():
+                        break
+                    continue
+                last_sent_int = display_value(last_temp, args.unit)
                 last_keepalive = time.monotonic()
                 init_mark = ctrl.last_init
-        # Wait for the next sample, but wake up regularly so SIGTERM/SIGINT is
-        # handled promptly even if Event.wait() is not interrupted by a signal.
-        deadline = time.monotonic() + args.rate
-        while not stop_event.is_set():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            stop_event.wait(min(remaining, 0.5))
+                force_send = False
+        wait_event(stop_event, args.rate)
 
     ctrl.close()
 

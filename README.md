@@ -208,8 +208,9 @@ Recovery
 
 - The display is re-initialised every 30 seconds, so a firmware blank does not leave
   it dark.
-- If writing to the HID device fails (USB reset or unplug), the process exits and
-  systemd restarts it (`Restart=always`, `RestartSec=5`).
+- If writing to the HID device fails (USB reset or unplug), the driver reconnects
+  in-process (1–30 s backoff), re-initialises the display and resumes updates.
+  The systemd unit keeps `Restart=always` as a backstop for unexpected crashes.
 
 ---
 
@@ -291,7 +292,7 @@ python3 -c "import psutil; print(psutil.sensors_temperatures())"
 
 ### After suspend the LCD is blank
 
-The service re-initialises the display every 30 seconds and restarts itself if the
+The service re-initialises the display every 30 seconds and reconnects if the
 HID handle is dead, so it normally recovers on its own. If it does not:
 
 ```bash
@@ -309,7 +310,8 @@ Check the journal:
 journalctl -u ocypus-lcd.service -n 50 --no-pager
 ```
 
-- `Send failed` — the HID handle is dead; the service restarts itself.
+- `Send failed` — the HID handle is dead; the driver reconnects and re-initialises
+  the display automatically.
 - `Sensor '...' not found` — wrong sensor name; list them with `ocypus-control sensors`.
 - No errors at all — the firmware blanked the display; it is re-initialised every
   30 seconds (`--reinit`).
