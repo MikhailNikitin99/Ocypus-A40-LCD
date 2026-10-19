@@ -140,13 +140,22 @@ class OcypusController:
             return False
 
 
+_sensors_error = None
+
+
 def get_sensors():
+    global _sensors_error
     try:
-        return psutil.sensors_temperatures()
+        sensors = psutil.sensors_temperatures()
     except Exception as e:
-        # hwmon can vanish temporarily (suspend, renumbering); don't kill the service
-        print(f"sensors_temperatures() failed: {e}", file=sys.stderr)
+        # hwmon can vanish temporarily (suspend, renumbering); log the transition only
+        message = str(e)
+        if message != _sensors_error:
+            print(f"sensors_temperatures() failed: {message}", file=sys.stderr)
+            _sensors_error = message
         return None
+    _sensors_error = None
+    return sensors
 
 
 def find_sensor(sensors, name, label=None):
@@ -232,11 +241,12 @@ def main():
     last_sent_int = None
     last_keepalive = time.monotonic()
     init_mark = ctrl.last_init
+    reading_ok = True
     while not stop:
         # Wake a display that the firmware blanked: writes keep succeeding but nothing
         # is shown until the init command is repeated.
         if not ctrl.maybe_reinit():
-            print("\rInit failed: restarting service", file=sys.stderr, flush=True)
+            print("Init failed: restarting service", file=sys.stderr, flush=True)
             ctrl.close()
             sys.exit(1)
         sensors = get_sensors()
@@ -254,29 +264,36 @@ def main():
         reinit_done = ctrl.last_init > init_mark
 
         if temp is not None:
+            if not reading_ok:
+                print(f"Sensor '{args.sensor}' is back", file=sys.stderr, flush=True)
+                reading_ok = True
             value_int = max(0, min(99, int(round(temp))))
-            if last_sent_int != value_int or due or reinit_done:
+            changed = last_sent_int != value_int
+            if changed or due or reinit_done:
                 if ctrl.send_temperature(temp, args.unit):
                     last_temp = temp
                     last_sent_int = value_int
                     last_keepalive = time.monotonic()
                     init_mark = ctrl.last_init
-                    print(f"\r{sensor.label or args.sensor}: {temp:.1f}°{args.unit.upper()}", end='', flush=True)
+                    if changed:
+                        print(f"{sensor.label or args.sensor}: {temp:.1f}°{args.unit.upper()}", flush=True)
                 else:
                     # The HID handle is dead (USB reset/unplug, short write). Exit and let
                     # systemd restart us so the device is re-opened and re-initialised.
-                    print("\rSend failed: restarting service", file=sys.stderr, flush=True)
+                    print("Send failed: restarting service", file=sys.stderr, flush=True)
                     ctrl.close()
                     sys.exit(1)
         else:
-            if sensor:
-                print(f"\rNo reading from sensor '{args.sensor}'", end='', flush=True)
-            else:
-                print(f"\rSensor '{args.sensor}' not found", end='', flush=True)
+            if reading_ok:
+                if sensor:
+                    print(f"No reading from sensor '{args.sensor}'", file=sys.stderr, flush=True)
+                else:
+                    print(f"Sensor '{args.sensor}' not found", file=sys.stderr, flush=True)
+                reading_ok = False
             # Keep the display alive with the last known value, never 0 °C.
             if last_temp is not None and (due or reinit_done):
                 if not ctrl.send_temperature(last_temp, args.unit):
-                    print("\rSend failed: restarting service", file=sys.stderr, flush=True)
+                    print("Send failed: restarting service", file=sys.stderr, flush=True)
                     ctrl.close()
                     sys.exit(1)
                 last_keepalive = time.monotonic()
@@ -284,7 +301,6 @@ def main():
         time.sleep(args.rate)
 
     ctrl.close()
-    print()
 
 
 if __name__ == "__main__":
