@@ -148,7 +148,7 @@ The LCD is only written when the displayed value changes, plus a keepalive every
 10 seconds, so idle USB traffic stays low.
 
 > **Note**
-> Blanking the LCD is not implemented yet: `off` does not turn the display off.
+> Blanking the LCD is not implemented yet: `off` reports the limitation and exits.
 
 ---
 

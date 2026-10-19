@@ -188,7 +188,7 @@ def main():
     on_p.add_argument('--reinit', type=float, default=REINIT_INTERVAL,
                       help='repeat the display init command every N seconds (0 disables)')
 
-    off_p = sub.add_parser('off', help='blank display')
+    off_p = sub.add_parser('off', help='blank the display (not supported yet)')
     off_p.add_argument('-i', '--interface', type=int, default=DEFAULT_INTERFACE)
 
     args = parser.parse_args()
@@ -212,15 +212,13 @@ def main():
                 print(f"{name}\t{s.label or '<unlabelled>'}\t{s.current:.1f}°C")
         return
 
-    ctrl = OcypusController()
     if args.cmd == 'off':
-        if ctrl.open(interface=args.interface, path=getattr(args, 'path', None)):
-            ctrl.close()
-            print("Display turned off.")
-        else:
-            sys.exit(1)
-        return
+        # The blanking command is unknown and opening the device wakes the panel,
+        # so report the limitation instead of pretending it worked.
+        print("Turning the display off is not supported yet.", file=sys.stderr)
+        sys.exit(1)
 
+    ctrl = OcypusController()
     # on
     if args.rate <= 0:
         parser.error("--rate must be > 0")
