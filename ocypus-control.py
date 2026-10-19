@@ -180,7 +180,11 @@ def main():
                 last_keepalive = time.monotonic()
                 print(f"\r{sensor.label or args.sensor}: {temp:.1f}°{args.unit.upper()}", end='', flush=True)
             else:
-                print("\rSend failed", end='', flush=True)
+                # The HID handle is dead (USB reset/unplug, short write). Exit and let
+                # systemd restart us so the device is re-opened and re-initialised.
+                print("\rSend failed: restarting service", file=sys.stderr, flush=True)
+                ctrl.close()
+                sys.exit(1)
         else:
             print(f"\rSensor '{args.sensor}' not found", end='', flush=True)
             if time.monotonic() - last_keepalive > KEEPALIVE_INTERVAL:
