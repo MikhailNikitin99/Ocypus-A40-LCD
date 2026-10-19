@@ -7,11 +7,12 @@ Ocypus Iota A40 LCD driver (Linux)
 Protocol:
   - Init: Feature Report ID=0x07, byte1=0xFD
   - Temperature: Feature Report ID=0x07, bytes1-2=0xFF 0xFF,
-                 byte4=tens, byte5=ones, byte7=0x00 (Celsius)
+                 byte4=tens, byte5=ones, byte7=0x00 (Celsius) or 0x01 (Fahrenheit)
   - Interface: 1 (use -i to change)
 """
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -35,9 +36,21 @@ DEFAULT_INTERFACE = 1
 def env_float(name: str, default: float) -> float:
     """Read a float from the environment, falling back to default on bad input."""
     try:
-        return float(os.environ[name])
+        value = float(os.environ[name])
     except (KeyError, ValueError):
         return default
+    if not math.isfinite(value):
+        print(f"Ignoring non-finite {name}={os.environ[name]!r}", file=sys.stderr)
+        return default
+    return value
+
+
+def display_value(temp_celsius: float, unit: str) -> Optional[int]:
+    """Return the integer shown on the two-digit display, or None if not finite."""
+    value = temp_celsius * 9 / 5 + 32 if unit == 'f' else temp_celsius
+    if not math.isfinite(value):
+        return None
+    return max(0, min(99, int(round(value))))
 
 
 DEFAULT_SENSOR = os.environ.get("OCYPUS_SENSOR", "coretemp")
@@ -89,13 +102,25 @@ class OcypusController:
         print(f"Connected to interface {info.get('interface_number')} ({dev_path})", file=sys.stderr)
         return True
 
+    def _send(self, report) -> bool:
+        if not self.device:
+            return False
+        try:
+            written = self.device.send_feature_report(report)
+        except Exception as e:
+            print(f"Send error: {e}", file=sys.stderr)
+            return False
+        # hidapi returns the number of bytes written; a short write means the
+        # handle is dead even though no exception was raised.
+        if isinstance(written, int) and written < REPORT_LENGTH:
+            print(f"Short write: {written}/{REPORT_LENGTH} bytes", file=sys.stderr)
+            return False
+        return True
+
     def init_display(self) -> bool:
         """Send the init command (0xFD), used on connect and to wake a blank display."""
         report = [REPORT_ID, 0xFD] + [0] * (REPORT_LENGTH - 2)
-        try:
-            self.device.send_feature_report(report)
-        except Exception as e:
-            print(f"Init error: {e}", file=sys.stderr)
+        if not self._send(report):
             return False
         self.last_init = time.monotonic()
         return True
@@ -119,25 +144,17 @@ class OcypusController:
     def send_temperature(self, temp_celsius: float, unit: str = 'c') -> bool:
         if not self.device:
             return False
-        if unit == 'f':
-            temp_celsius = temp_celsius * 9 / 5 + 32
-            unit_byte = 0x01
-        else:
-            unit_byte = 0x00
-        temp = max(0, min(99, int(round(temp_celsius))))
-        tens, ones = divmod(temp, 10)
+        value = display_value(temp_celsius, unit)
+        if value is None:
+            return False
+        tens, ones = divmod(value, 10)
         report = [REPORT_ID] + [0] * (REPORT_LENGTH - 1)
         report[1] = 0xFF
         report[2] = 0xFF
         report[4] = tens
         report[5] = ones
-        report[7] = unit_byte
-        try:
-            self.device.send_feature_report(report)
-            return True
-        except Exception as e:
-            print(f"Send error: {e}", file=sys.stderr)
-            return False
+        report[7] = 0x01 if unit == 'f' else 0x00
+        return self._send(report)
 
 
 _sensors_error = None
@@ -220,8 +237,10 @@ def main():
 
     ctrl = OcypusController()
     # on
-    if args.rate <= 0:
-        parser.error("--rate must be > 0")
+    if not math.isfinite(args.rate) or args.rate <= 0:
+        parser.error("--rate must be a finite number > 0")
+    if not math.isfinite(args.reinit):
+        parser.error("--reinit must be a finite number")
     ctrl.reinit_interval = args.reinit
     if not ctrl.open(interface=args.interface, path=getattr(args, 'path', None)):
         sys.exit(1)
@@ -253,6 +272,8 @@ def main():
         if sensor:
             try:
                 temp = float(sensor.current)
+                if not math.isfinite(temp):
+                    temp = None
             except (TypeError, ValueError):
                 pass
 
@@ -265,7 +286,7 @@ def main():
             if not reading_ok:
                 print(f"Sensor '{args.sensor}' is back", file=sys.stderr, flush=True)
                 reading_ok = True
-            value_int = max(0, min(99, int(round(temp))))
+            value_int = display_value(temp, args.unit)
             changed = last_sent_int != value_int
             if changed or due or reinit_done:
                 if ctrl.send_temperature(temp, args.unit):
@@ -274,7 +295,7 @@ def main():
                     last_keepalive = time.monotonic()
                     init_mark = ctrl.last_init
                     if changed:
-                        print(f"{sensor.label or args.sensor}: {temp:.1f}°{args.unit.upper()}", flush=True)
+                        print(f"{sensor.label or args.sensor}: {value_int}°{args.unit.upper()}", flush=True)
                 else:
                     # The HID handle is dead (USB reset/unplug, short write). Exit and let
                     # systemd restart us so the device is re-opened and re-initialised.

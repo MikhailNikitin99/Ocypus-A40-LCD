@@ -136,6 +136,10 @@ Fahrenheit
 ocypus-control on -u f
 ```
 
+> **Note**
+> The display has two digits, so values above 99 are shown as 99. In Fahrenheit
+> mode typical CPU temperatures (100 °F and above) therefore cap at 99 °F.
+
 Refresh every 2 seconds
 
 ```bash
