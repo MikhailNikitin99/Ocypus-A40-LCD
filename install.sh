@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 INSTALL_DIR="/opt/ocypus-a40-lcd"
 SERVICE_NAME="ocypus-lcd"
@@ -60,7 +60,9 @@ udevadm control --reload-rules
 udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=1a2c --attr-match=idProduct=434d
 udevadm trigger --subsystem-match=hidraw
 
-echo "Enabling and starting systemd service..."
+echo "Enabling and restarting systemd service..."
 systemctl daemon-reload
-systemctl enable --now "$SERVICE_NAME"
+systemctl enable "$SERVICE_NAME"
+# restart, not "enable --now": an already running service must pick up the new files
+systemctl restart "$SERVICE_NAME"
 echo "Done. Check status with: systemctl status $SERVICE_NAME"
