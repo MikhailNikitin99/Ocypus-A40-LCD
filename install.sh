@@ -4,13 +4,12 @@ set -euo pipefail
 INSTALL_DIR="/opt/ocypus-a40-lcd"
 SERVICE_NAME="ocypus-lcd"
 
-# sys requirements
-install_system_deps() {
-    echo "Installing required system packages (build tools, libusb, Python headers)..."
+# Build requirements, needed only when a prebuilt wheel is unavailable.
+install_build_deps() {
+    echo "Installing build dependencies (compiler, libusb and Python headers)..."
     if command -v apt-get &>/dev/null; then
-        apt-get update
         apt-get install -y --no-install-recommends \
-            build-essential pkg-config libusb-1.0-0-dev python3-dev python3-venv
+            build-essential pkg-config libusb-1.0-0-dev python3-dev
     elif command -v dnf &>/dev/null; then
         dnf install -y make gcc pkgconf libusb1-devel python3-devel
     elif command -v zypper &>/dev/null; then
@@ -30,6 +29,32 @@ install_system_deps() {
     fi
 }
 
+create_venv() {
+    echo "Setting up Python virtual environment..."
+    if python3 -m venv "$INSTALL_DIR/.venv"; then
+        return
+    fi
+    if command -v apt-get &>/dev/null; then
+        echo "Python venv support is missing; installing python3-venv..."
+        apt-get install -y --no-install-recommends python3-venv
+        python3 -m venv --clear "$INSTALL_DIR/.venv"
+    else
+        echo "ERROR: python3 -m venv failed. Install the venv module for your distribution."
+        exit 1
+    fi
+}
+
+install_python_deps() {
+    echo "Installing Python dependencies from wheels..."
+    if ! "$INSTALL_DIR/.venv/bin/pip" install --only-binary=:all: -r "$INSTALL_DIR/requirements.txt"; then
+        echo "No suitable wheel for this platform; building from source..."
+        install_build_deps
+        "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
+    fi
+    # The old "hid" package conflicts with hidapi.
+    "$INSTALL_DIR/.venv/bin/pip" uninstall -y hid 2>/dev/null || true
+}
+
 # create a user
 echo "Creating group and user 'ocypus'..."
 getent group ocypus >/dev/null || groupadd --system ocypus
@@ -42,16 +67,9 @@ cp requirements.txt "$INSTALL_DIR/"
 cp systemd/ocypus-lcd.service /etc/systemd/system/
 cp udev/99-ocypus-a40.rules /etc/udev/rules.d/
 
-# sys deps
-install_system_deps
-
 # Python venv + dependencies
-echo "Setting up Python virtual environment..."
-python3 -m venv "$INSTALL_DIR/.venv"
-"$INSTALL_DIR/.venv/bin/pip" install --upgrade pip
-"$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
-
-"$INSTALL_DIR/.venv/bin/pip" uninstall -y hid 2>/dev/null || true
+create_venv
+install_python_deps
 
 # CLI launcher: the script lives in $INSTALL_DIR and needs the venv's Python.
 echo "Installing /usr/local/bin/ocypus-control..."

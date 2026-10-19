@@ -72,11 +72,14 @@ sudo ./install.sh
 The installer automatically:
 
 - creates an `ocypus` system user
-- installs Python dependencies
+- installs Python dependencies from prebuilt wheels
 - installs udev rules (including disabling USB autosuspend for the cooler)
 - installs the `ocypus-control` command into `/usr/local/bin`
 - installs the systemd service
 - enables automatic startup
+
+Build tools, libusb headers and Python headers are installed only if no prebuilt
+wheel is available for your platform.
 
 Re-run `sudo ./install.sh` to update an existing installation: it copies the new
 files and restarts the service.
