@@ -52,6 +52,10 @@ The LCD is controlled through **HID Interface 1** using **Report ID `0x07`**.
 - systemd
 - udev
 
+> **Note**
+> The installer supports systemd-based distributions only. Alpine/OpenRC is not
+> supported.
+
 > **Important**
 >
 > Install **`hidapi`**, **NOT** the package named `hid`.
@@ -72,11 +76,16 @@ sudo ./install.sh
 The installer automatically:
 
 - creates an `ocypus` system user
+- adds the invoking user to the `ocypus` group for CLI access
 - installs Python dependencies from prebuilt wheels
 - installs udev rules (including disabling USB autosuspend for the cooler)
 - installs the `ocypus-control` command into `/usr/local/bin`
 - installs the systemd service
 - enables automatic startup
+
+After the first installation, log out and back in (or run `newgrp ocypus`)
+so the CLI can open the device without `sudo`. The service itself starts
+immediately.
 
 Build tools, libusb headers and Python headers are installed only if no prebuilt
 wheel is available for your platform.
@@ -89,19 +98,29 @@ files and restarts the service.
 ## Manual
 
 ```bash
-pip install hidapi psutil
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 
 sudo cp ocypus-control.py /usr/local/bin/
 sudo chmod +x /usr/local/bin/ocypus-control.py
 
-sudo groupadd --system ocypus
-sudo useradd --system --gid ocypus --no-create-home --shell /usr/sbin/nologin ocypus
+sudo groupadd --system ocypus 2>/dev/null || true
+sudo useradd --system --gid ocypus --no-create-home --shell /usr/sbin/nologin ocypus 2>/dev/null || true
+sudo usermod -aG ocypus "$USER"
 
 sudo cp udev/99-ocypus-a40.rules /etc/udev/rules.d/
 
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
+
+> **Note**
+> On Debian/Ubuntu, install `python3-venv` first if `python3 -m venv` fails.
+
+> **Note**
+> The manual path uses the local `.venv`. Run the script with
+> `.venv/bin/python /usr/local/bin/ocypus-control.py`, and log out and back in
+> after `usermod` so the `ocypus` group is active.
 
 > **Note**
 > The bundled systemd unit expects the script in `/opt/ocypus-a40-lcd` with a
@@ -112,8 +131,8 @@ sudo udevadm trigger
 
 # Usage
 
-After `install.sh` the CLI is available as `ocypus-control` (a launcher that uses
-the virtualenv).
+After `install.sh` and a re-login (or `newgrp ocypus`), the CLI is available as
+`ocypus-control` (a launcher that uses the virtualenv).
 
 Show available sensors
 
@@ -137,6 +156,9 @@ If the selected sensor is unavailable, the driver falls back to `coretemp`,
 `k10temp`, `zenpower`, `cpu_thermal`, and `acpitz`, and logs which one it uses.
 Disable this with `--no-fallback`.
 
+The driver stays on the first sensor that produced a reading, so it does not
+flap between sensors; it switches only if that sensor becomes unreadable.
+
 Fahrenheit
 
 ```bash
@@ -159,8 +181,16 @@ Re-initialise the display every 15 seconds (default: 30, `0` disables)
 ocypus-control on --reinit 15
 ```
 
+> **Note**
+> With `--reinit 0` a blank display stays blank until the driver is restarted;
+> the driver prints a warning when this mode is enabled.
+
+`-p /dev/...` pins a specific device path. Do not use it with the service: after
+a USB reset the path can change, and a pinned path will not reconnect.
+
 The LCD is only written when the displayed value changes, plus a keepalive every
-10 seconds, so idle USB traffic stays low.
+10 seconds (or once per poll period if `--rate` is slower than 10 seconds), so
+idle USB traffic stays low.
 
 > **Note**
 > Blanking the LCD is not implemented yet: `off` reports the limitation and exits.
@@ -210,7 +240,7 @@ sudo systemctl edit ocypus-lcd.service
 Recovery
 
 - The display is re-initialised every 30 seconds, so a firmware blank does not leave
-  it dark.
+  it dark (unless re-init is disabled with `OCYPUS_REINIT=0` or `--reinit 0`).
 - If writing to the HID device fails (USB reset or unplug), the driver reconnects
   in-process (1–30 s backoff), re-initialises the display and resumes updates.
   The systemd unit keeps `Restart=always` as a backstop for unexpected crashes.
@@ -269,26 +299,42 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
+The device belongs to the `ocypus` group. If you use the CLI, make sure your
+user is in that group and log out and back in (or run `newgrp ocypus`):
+
+```bash
+id -nG
+sudo usermod -aG ocypus "$USER"
+```
+
 ---
 
 ### Module 'hid' has no attribute 'device'
 
-You installed the wrong package.
+You installed the wrong package. Re-run the installer, or use the installer's
+virtualenv if you installed manually:
 
 ```bash
-pip uninstall hid
-
-pip install hidapi
+sudo /opt/ocypus-a40-lcd/.venv/bin/pip uninstall -y hid hidapi
+sudo /opt/ocypus-a40-lcd/.venv/bin/pip install hidapi
 ```
+
+For a manual `.venv`, use `.venv/bin/pip` instead.
 
 ---
 
 ### Wrong temperature
 
-Verify the selected sensor
+Verify the selected sensor:
 
 ```bash
-python3 -c "import psutil; print(psutil.sensors_temperatures())"
+ocypus-control sensors
+```
+
+If the CLI is not available yet, use the installer's virtualenv directly:
+
+```bash
+sudo /opt/ocypus-a40-lcd/.venv/bin/python /opt/ocypus-a40-lcd/ocypus-control.py sensors
 ```
 
 ---
@@ -317,7 +363,7 @@ journalctl -u ocypus-lcd.service -n 50 --no-pager
   the display automatically.
 - `Sensor '...' not found` — wrong sensor name; list them with `ocypus-control sensors`.
 - No errors at all — the firmware blanked the display; it is re-initialised every
-  30 seconds (`--reinit`).
+  30 seconds (`--reinit`). If you set `--reinit 0`, this recovery is disabled.
 
 ---
 

@@ -19,12 +19,30 @@ import threading
 import time
 from typing import Optional
 
-import psutil
-import hid
+try:
+    import psutil
+except (ImportError, OSError) as e:
+    sys.exit(
+        "Error: the Python package 'psutil' is not installed or cannot be loaded.\n"
+        f"Details: {e}\n"
+        "Install it with: pip install psutil\n"
+        "or re-run the installer from the repository."
+    )
+
+try:
+    import hid
+except (ImportError, OSError) as e:
+    sys.exit(
+        "Error: the Python package 'hidapi' is not installed or cannot be loaded.\n"
+        f"Details: {e}\n"
+        "Install it with: pip install hidapi\n"
+        "Do not install the package named 'hid'."
+    )
+
 if not hasattr(hid, 'device'):
     sys.exit(
         "Error: The Python package 'hid' is installed, but it is not 'hidapi'.\n"
-        "Please run: pip uninstall hid && pip install hidapi\n"
+        "Please run: pip uninstall -y hid hidapi; pip install hidapi\n"
         "or re-run the installer from the repository."
     )
 
@@ -37,11 +55,16 @@ DEFAULT_INTERFACE = 1
 def env_float(name: str, default: float) -> float:
     """Read a float from the environment, falling back to default on bad input."""
     try:
-        value = float(os.environ[name])
-    except (KeyError, ValueError):
+        raw = os.environ[name]
+    except KeyError:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"Ignoring invalid {name}={raw!r}", file=sys.stderr)
         return default
     if not math.isfinite(value):
-        print(f"Ignoring non-finite {name}={os.environ[name]!r}", file=sys.stderr)
+        print(f"Ignoring non-finite {name}={raw!r}", file=sys.stderr)
         return default
     return value
 
@@ -51,7 +74,9 @@ def display_value(temp_celsius: float, unit: str) -> Optional[int]:
     value = temp_celsius * 9 / 5 + 32 if unit == 'f' else temp_celsius
     if not math.isfinite(value):
         return None
-    return max(0, min(99, int(round(value))))
+    # Round half up. Python's round() uses banker's rounding, which would show
+    # 36.5 as 36 and 0.5 as 0. Negative values are clamped to zero below.
+    return max(0, min(99, math.floor(value + 0.5)))
 
 
 DEFAULT_SENSOR = os.environ.get("OCYPUS_SENSOR", "coretemp")
@@ -123,8 +148,8 @@ class OcypusController:
             return False
         # hidapi returns the number of bytes written; a short write means the
         # handle is dead even though no exception was raised.
-        if isinstance(written, int) and written < REPORT_LENGTH:
-            print(f"Short write: {written}/{REPORT_LENGTH} bytes", file=sys.stderr)
+        if not isinstance(written, int) or written < REPORT_LENGTH:
+            print(f"Short write: {written!r}/{REPORT_LENGTH} bytes", file=sys.stderr)
             return False
         return True
 
@@ -263,6 +288,9 @@ def main():
         except Exception as e:
             print(f"Device enumeration failed: {e}", file=sys.stderr)
             sys.exit(1)
+        if not devices:
+            print("No devices found", file=sys.stderr)
+            sys.exit(1)
         for d in devices:
             print(f"interface={d.get('interface_number')} path={d['path'].decode() if isinstance(d['path'], bytes) else d['path']}")
         return
@@ -271,9 +299,18 @@ def main():
         if sensors is None:
             print("Could not read temperature sensors.", file=sys.stderr)
             sys.exit(1)
+        if not sensors:
+            print("No temperature sensors found.", file=sys.stderr)
+            sys.exit(1)
         for name, entries in sensors.items():
-            for s in entries:
-                print(f"{name}\t{s.label or '<unlabelled>'}\t{s.current:.1f}°C")
+            for s in entries or []:
+                try:
+                    value = float(s.current)
+                except (TypeError, ValueError):
+                    current = "n/a"
+                else:
+                    current = f"{value:.1f}°C" if math.isfinite(value) else "n/a"
+                print(f"{name}\t{s.label or '<unlabelled>'}\t{current}")
         return
 
     if args.cmd == 'off':
@@ -286,9 +323,23 @@ def main():
     # on
     if not math.isfinite(args.rate) or args.rate <= 0:
         parser.error("--rate must be a finite number > 0")
-    if not math.isfinite(args.reinit):
-        parser.error("--reinit must be a finite number")
+    if not math.isfinite(args.reinit) or args.reinit < 0:
+        parser.error("--reinit must be a finite number >= 0")
     ctrl.reinit_interval = args.reinit
+    if args.reinit == 0:
+        print(
+            "Warning: automatic display re-init is disabled; "
+            "a blank display will not recover until restart.",
+            file=sys.stderr,
+            flush=True,
+        )
+    if args.path:
+        print(
+            "Warning: --path is pinned; if the device re-enumerates at a different "
+            "path, the driver will not reconnect.",
+            file=sys.stderr,
+            flush=True,
+        )
 
     import signal
     stop_event = threading.Event()
@@ -390,7 +441,14 @@ def main():
                 if sensors is None:
                     pass  # get_sensors() already reported the error
                 elif name:
-                    print(f"No reading from sensor '{name}'", file=sys.stderr, flush=True)
+                    if args.label:
+                        print(
+                            f"No reading from sensor '{name}' with label '{args.label}'",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    else:
+                        print(f"No reading from sensor '{name}'", file=sys.stderr, flush=True)
                 else:
                     print(f"Sensor '{active_sensor}' not found", file=sys.stderr, flush=True)
                 reading_ok = False
