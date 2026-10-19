@@ -130,6 +130,10 @@ Specific sensor
 ocypus-control on -s coretemp
 ```
 
+If the selected sensor is unavailable, the driver falls back to `coretemp`,
+`k10temp`, `zenpower`, `cpu_thermal`, and `acpitz`, and logs which one it uses.
+Disable this with `--no-fallback`.
+
 Fahrenheit
 
 ```bash

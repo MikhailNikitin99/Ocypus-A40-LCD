@@ -57,6 +57,7 @@ DEFAULT_SENSOR = os.environ.get("OCYPUS_SENSOR", "coretemp")
 DEFAULT_REFRESH = env_float("OCYPUS_RATE", 1.0)
 REINIT_INTERVAL = env_float("OCYPUS_REINIT", 30.0)
 KEEPALIVE_INTERVAL = 10.0
+FALLBACK_SENSORS = ("coretemp", "k10temp", "zenpower", "cpu_thermal", "acpitz")
 
 
 class OcypusController:
@@ -175,18 +176,41 @@ def get_sensors():
     return sensors
 
 
-def find_sensor(sensors, name, label=None):
-    if not sensors:
-        return None
-    group = sensors.get(name)
-    if not group:
-        return None
-    if label:
-        for s in group:
-            if s.label == label:
-                return s
-        return None
-    return group[0]
+def pick_sensor(sensors, requested, label=None, active=None, fallback=True):
+    """Return (name, entry, value) of the first readable sensor.
+
+    The active sensor is preferred, so the driver does not flap between sensors.
+    If none of the entries has a usable value, name is the first group that
+    exists and value is None.
+    """
+    names = []
+    if active:
+        names.append(active)
+    names.append(requested)
+    if fallback:
+        names.extend(FALLBACK_SENSORS)
+
+    seen = set()
+    first_seen = None
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        group = sensors.get(name) if sensors else None
+        if not group:
+            continue
+        if first_seen is None:
+            first_seen = name
+        for entry in group:
+            if label and entry.label != label:
+                continue
+            try:
+                value = float(entry.current)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                return name, entry, value
+    return first_seen, None, None
 
 
 def main():
@@ -204,6 +228,8 @@ def main():
     on_p.add_argument('-p', '--path')
     on_p.add_argument('--reinit', type=float, default=REINIT_INTERVAL,
                       help='repeat the display init command every N seconds (0 disables)')
+    on_p.add_argument('--no-fallback', action='store_true',
+                      help='use only the selected sensor, without fallback')
 
     off_p = sub.add_parser('off', help='blank the display (not supported yet)')
     off_p.add_argument('-i', '--interface', type=int, default=DEFAULT_INTERFACE)
@@ -259,6 +285,7 @@ def main():
     last_keepalive = time.monotonic()
     init_mark = ctrl.last_init
     reading_ok = True
+    active_sensor = args.sensor
     while not stop:
         # Wake a display that the firmware blanked: writes keep succeeding but nothing
         # is shown until the init command is repeated.
@@ -267,15 +294,9 @@ def main():
             ctrl.close()
             sys.exit(1)
         sensors = get_sensors()
-        sensor = find_sensor(sensors, args.sensor, args.label)
-        temp = None
-        if sensor:
-            try:
-                temp = float(sensor.current)
-                if not math.isfinite(temp):
-                    temp = None
-            except (TypeError, ValueError):
-                pass
+        name, sensor, temp = pick_sensor(
+            sensors, args.sensor, args.label, active_sensor, not args.no_fallback
+        )
 
         # Send only when the displayed value changes, on keepalive, or right after init
         # (init clears the screen, so the value has to be sent again).
@@ -284,8 +305,13 @@ def main():
 
         if temp is not None:
             if not reading_ok:
-                print(f"Sensor '{args.sensor}' is back", file=sys.stderr, flush=True)
+                print(f"Sensor '{name}' is back", file=sys.stderr, flush=True)
                 reading_ok = True
+                active_sensor = name
+            elif name != active_sensor:
+                print(f"Sensor '{active_sensor}' is unavailable, using '{name}'",
+                      file=sys.stderr, flush=True)
+                active_sensor = name
             value_int = display_value(temp, args.unit)
             changed = last_sent_int != value_int
             if changed or due or reinit_done:
@@ -295,7 +321,7 @@ def main():
                     last_keepalive = time.monotonic()
                     init_mark = ctrl.last_init
                     if changed:
-                        print(f"{sensor.label or args.sensor}: {value_int}°{args.unit.upper()}", flush=True)
+                        print(f"{sensor.label or name}: {value_int}°{args.unit.upper()}", flush=True)
                 else:
                     # The HID handle is dead (USB reset/unplug, short write). Exit and let
                     # systemd restart us so the device is re-opened and re-initialised.
@@ -304,10 +330,12 @@ def main():
                     sys.exit(1)
         else:
             if reading_ok:
-                if sensor:
-                    print(f"No reading from sensor '{args.sensor}'", file=sys.stderr, flush=True)
+                if sensors is None:
+                    pass  # get_sensors() already reported the error
+                elif name:
+                    print(f"No reading from sensor '{name}'", file=sys.stderr, flush=True)
                 else:
-                    print(f"Sensor '{args.sensor}' not found", file=sys.stderr, flush=True)
+                    print(f"Sensor '{active_sensor}' not found", file=sys.stderr, flush=True)
                 reading_ok = False
             # Keep the display alive with the last known value, never 0 °C.
             if last_temp is not None and (due or reinit_done):
