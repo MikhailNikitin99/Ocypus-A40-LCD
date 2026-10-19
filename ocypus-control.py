@@ -203,6 +203,7 @@ def main():
     signal.signal(signal.SIGTERM, handler)
 
     print(f"Display started (sensor={args.sensor}, unit={args.unit})", file=sys.stderr)
+    last_temp = None
     last_keepalive = time.monotonic()
     while not stop:
         # Wake a display that the firmware blanked: writes keep succeeding but nothing
@@ -219,6 +220,7 @@ def main():
             except (TypeError, ValueError):
                 temp = 0.0
             if ctrl.send_temperature(temp, args.unit):
+                last_temp = temp
                 last_keepalive = time.monotonic()
                 print(f"\r{sensor.label or args.sensor}: {temp:.1f}°{args.unit.upper()}", end='', flush=True)
             else:
@@ -229,8 +231,12 @@ def main():
                 sys.exit(1)
         else:
             print(f"\rSensor '{args.sensor}' not found", end='', flush=True)
-            if time.monotonic() - last_keepalive > KEEPALIVE_INTERVAL:
-                ctrl.send_temperature(0, args.unit)
+            # Keep the display alive with the last known value, never 0 °C.
+            if last_temp is not None and time.monotonic() - last_keepalive > KEEPALIVE_INTERVAL:
+                if not ctrl.send_temperature(last_temp, args.unit):
+                    print("\rSend failed: restarting service", file=sys.stderr, flush=True)
+                    ctrl.close()
+                    sys.exit(1)
                 last_keepalive = time.monotonic()
         time.sleep(args.rate)
 
