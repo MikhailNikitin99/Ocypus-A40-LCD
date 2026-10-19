@@ -121,6 +121,9 @@ class OcypusController:
             return False
         if unit == 'f':
             temp_celsius = temp_celsius * 9 / 5 + 32
+            unit_byte = 0x01
+        else:
+            unit_byte = 0x00
         temp = max(0, min(99, int(round(temp_celsius))))
         tens, ones = divmod(temp, 10)
         report = [REPORT_ID] + [0] * (REPORT_LENGTH - 1)
@@ -128,7 +131,7 @@ class OcypusController:
         report[2] = 0xFF
         report[4] = tens
         report[5] = ones
-        report[7] = 0x00   # Celsius
+        report[7] = unit_byte
         try:
             self.device.send_feature_report(report)
             return True
@@ -236,11 +239,14 @@ def main():
             sys.exit(1)
         sensors = get_sensors()
         sensor = find_sensor(sensors, args.sensor, args.label)
+        temp = None
         if sensor:
             try:
                 temp = float(sensor.current)
             except (TypeError, ValueError):
-                temp = 0.0
+                pass
+
+        if temp is not None:
             if ctrl.send_temperature(temp, args.unit):
                 last_temp = temp
                 last_keepalive = time.monotonic()
@@ -252,7 +258,10 @@ def main():
                 ctrl.close()
                 sys.exit(1)
         else:
-            print(f"\rSensor '{args.sensor}' not found", end='', flush=True)
+            if sensor:
+                print(f"\rNo reading from sensor '{args.sensor}'", end='', flush=True)
+            else:
+                print(f"\rSensor '{args.sensor}' not found", end='', flush=True)
             # Keep the display alive with the last known value, never 0 °C.
             if last_temp is not None and time.monotonic() - last_keepalive > KEEPALIVE_INTERVAL:
                 if not ctrl.send_temperature(last_temp, args.unit):
