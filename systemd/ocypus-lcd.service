@@ -1,6 +1,5 @@
 [Unit]
 Description=Ocypus Iota A40 LCD display
-After=multi-user.target
 
 [Service]
 Type=simple
@@ -17,7 +16,6 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/dev
 DevicePolicy=closed
 DeviceAllow=char-usb_device rw
 

@@ -12,6 +12,7 @@ Protocol:
 """
 
 import argparse
+import os
 import sys
 import time
 from typing import Optional
@@ -29,9 +30,19 @@ VID, PID = 0x1a2c, 0x434d
 REPORT_ID = 0x07
 REPORT_LENGTH = 65
 DEFAULT_INTERFACE = 1
-DEFAULT_SENSOR = "coretemp"
-DEFAULT_REFRESH = 1.0
-REINIT_INTERVAL = 30.0
+
+
+def env_float(name: str, default: float) -> float:
+    """Read a float from the environment, falling back to default on bad input."""
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
+DEFAULT_SENSOR = os.environ.get("OCYPUS_SENSOR", "coretemp")
+DEFAULT_REFRESH = env_float("OCYPUS_RATE", 1.0)
+REINIT_INTERVAL = env_float("OCYPUS_REINIT", 30.0)
 KEEPALIVE_INTERVAL = 2.0
 
 
