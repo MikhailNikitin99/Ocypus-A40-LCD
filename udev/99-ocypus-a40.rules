@@ -1,1 +1,8 @@
+# Access to the USB device node for the service user.
 SUBSYSTEM=="usb", ATTRS{idVendor}=="1a2c", ATTRS{idProduct}=="434d", MODE="0660", GROUP="ocypus"
+
+# Keep the display out of USB autosuspend: resume/reattach can blank it.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1a2c", ATTR{idProduct}=="434d", TEST=="power/control", ATTR{power/control}="on"
+
+# hidraw nodes, in case hidapi is built with the hidraw backend.
+KERNEL=="hidraw*", ATTRS{idVendor}=="1a2c", ATTRS{idProduct}=="434d", MODE="0660", GROUP="ocypus"

@@ -56,7 +56,9 @@ python3 -m venv "$INSTALL_DIR/.venv"
 # --- Udev и systemd ---
 echo "Reloading udev rules..."
 udevadm control --reload-rules
-udevadm trigger
+# Re-run the "add" rules for this device only: the autosuspend rule matches ACTION=="add"
+udevadm trigger --action=add --subsystem-match=usb --attr-match=idVendor=1a2c --attr-match=idProduct=434d
+udevadm trigger --subsystem-match=hidraw
 
 echo "Enabling and starting systemd service..."
 systemctl daemon-reload
