@@ -31,12 +31,15 @@ REPORT_LENGTH = 65
 DEFAULT_INTERFACE = 1
 DEFAULT_SENSOR = "coretemp"
 DEFAULT_REFRESH = 1.0
+REINIT_INTERVAL = 30.0
 KEEPALIVE_INTERVAL = 2.0
 
 
 class OcypusController:
     def __init__(self):
         self.device = None
+        self.reinit_interval = REINIT_INTERVAL
+        self.last_init = 0.0
 
     def open(self, interface: int = DEFAULT_INTERFACE, path: Optional[str] = None) -> bool:
         devices = hid.enumerate(VID, PID)
@@ -61,15 +64,34 @@ class OcypusController:
         try:
             dev = hid.device()
             dev.open_path(dev_path.encode())
-            # init sequence
-            init_report = [REPORT_ID, 0xFD] + [0] * (REPORT_LENGTH - 2)
-            dev.send_feature_report(init_report)
-            self.device = dev
-            print(f"Connected to interface {info.get('interface_number')} ({dev_path})", file=sys.stderr)
-            return True
         except Exception as e:
             print(f"Failed to open {dev_path}: {e}", file=sys.stderr)
             return False
+        self.device = dev
+        if not self.init_display():
+            self.close()
+            return False
+        print(f"Connected to interface {info.get('interface_number')} ({dev_path})", file=sys.stderr)
+        return True
+
+    def init_display(self) -> bool:
+        """Send the init command (0xFD), used on connect and to wake a blank display."""
+        report = [REPORT_ID, 0xFD] + [0] * (REPORT_LENGTH - 2)
+        try:
+            self.device.send_feature_report(report)
+        except Exception as e:
+            print(f"Init error: {e}", file=sys.stderr)
+            return False
+        self.last_init = time.monotonic()
+        return True
+
+    def maybe_reinit(self) -> bool:
+        """Repeat init every reinit_interval seconds in case the firmware blanked the display."""
+        if self.reinit_interval <= 0:
+            return True
+        if time.monotonic() - self.last_init < self.reinit_interval:
+            return True
+        return self.init_display()
 
     def close(self):
         if self.device:
@@ -129,6 +151,8 @@ def main():
     on_p.add_argument('-r', '--rate', type=float, default=DEFAULT_REFRESH)
     on_p.add_argument('-i', '--interface', type=int, default=DEFAULT_INTERFACE)
     on_p.add_argument('-p', '--path')
+    on_p.add_argument('--reinit', type=float, default=REINIT_INTERVAL,
+                      help='repeat the display init command every N seconds (0 disables)')
 
     off_p = sub.add_parser('off', help='blank display')
     off_p.add_argument('-i', '--interface', type=int, default=DEFAULT_INTERFACE)
@@ -155,6 +179,7 @@ def main():
         return
 
     # on
+    ctrl.reinit_interval = args.reinit
     if not ctrl.open(interface=args.interface, path=getattr(args, 'path', None)):
         sys.exit(1)
 
@@ -169,6 +194,12 @@ def main():
     print(f"Display started (sensor={args.sensor}, unit={args.unit})", file=sys.stderr)
     last_keepalive = time.monotonic()
     while not stop:
+        # Wake a display that the firmware blanked: writes keep succeeding but nothing
+        # is shown until the init command is repeated.
+        if not ctrl.maybe_reinit():
+            print("\rInit failed: restarting service", file=sys.stderr, flush=True)
+            ctrl.close()
+            sys.exit(1)
         sensors = get_sensors()
         sensor = find_sensor(sensors, args.sensor, args.label)
         if sensor:
