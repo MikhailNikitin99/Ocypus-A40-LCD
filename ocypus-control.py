@@ -42,7 +42,11 @@ class OcypusController:
         self.last_init = 0.0
 
     def open(self, interface: int = DEFAULT_INTERFACE, path: Optional[str] = None) -> bool:
-        devices = hid.enumerate(VID, PID)
+        try:
+            devices = hid.enumerate(VID, PID)
+        except Exception as e:
+            print(f"Device enumeration failed: {e}", file=sys.stderr)
+            return False
         candidates = []
         for d in devices:
             iface = d.get('interface_number')
@@ -167,7 +171,12 @@ def main():
     args = parser.parse_args()
 
     if args.cmd == 'list':
-        for d in hid.enumerate(VID, PID):
+        try:
+            devices = hid.enumerate(VID, PID)
+        except Exception as e:
+            print(f"Device enumeration failed: {e}", file=sys.stderr)
+            sys.exit(1)
+        for d in devices:
             print(f"interface={d.get('interface_number')} path={d['path'].decode() if isinstance(d['path'], bytes) else d['path']}")
         return
     if args.cmd == 'sensors':
@@ -190,6 +199,8 @@ def main():
         return
 
     # on
+    if args.rate <= 0:
+        parser.error("--rate must be > 0")
     ctrl.reinit_interval = args.reinit
     if not ctrl.open(interface=args.interface, path=getattr(args, 'path', None)):
         sys.exit(1)
